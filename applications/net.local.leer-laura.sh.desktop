@@ -1,0 +1,7 @@
+[Desktop Entry]
+Exec=sh -c 'D="$(dirname "$(readlink -f "$1")")/.."; exec "$D/bin/leer-laura.sh"' sh %k
+Name=Laura
+NoDisplay=true
+StartupNotify=false
+Type=Application
+X-KDE-GlobalAccel-CommandShortcut=true

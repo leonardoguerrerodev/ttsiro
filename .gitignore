@@ -1,0 +1,6 @@
+voces/*.onnx
+voces/*.onnx.json
+voces/*.part
+activo.env
+perfiles.json
+__pycache__/

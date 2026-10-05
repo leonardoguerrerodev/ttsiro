@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=TTSiro - Servidor Local
+Comment=Iniciar TTSiro y mostrar su menú de terminal
+Icon=utilities-terminal
+Terminal=false
+Exec=konsole -e python3 -c "import os,subprocess,sys,urllib.parse; p=urllib.parse.unquote(sys.argv[1].removeprefix('file://')); d=os.path.dirname(os.path.abspath(p)); subprocess.run([os.path.join(d,'ui/onoff.sh')])" %k
+Categories=Utility;
+StartupNotify=false

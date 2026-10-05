@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TTSiro</title>
+<style>
+  :root {
+    --bg: #f4f4f6; --card: #fff; --txt: #1d1d22; --sub: #6b6b75; --borde: #dcdce2;
+    --acento: #7b4dff; --acento-txt: #fff; --peligro: #c8372d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #141418; --card: #1e1e24; --txt: #ececf1; --sub: #9a9aa6; --borde: #33333c;
+            --acento: #9b7bff; --acento-txt: #111; --peligro: #ff6b5e; }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--bg); color: var(--txt);
+         font: 15px/1.4 system-ui, sans-serif; display: flex; justify-content: center; padding: 24px 16px; }
+  main { width: 100%; max-width: 520px; background: var(--card); border: 1px solid var(--borde);
+         border-radius: 14px; padding: 20px; display: grid; gap: 16px; }
+  h1 { margin: 0; font-size: 18px; display: flex; justify-content: space-between; align-items: baseline; }
+  h1 small { font-size: 12px; font-weight: 400; color: var(--sub); }
+  .fila { display: flex; gap: 8px; align-items: center; }
+  .fila > select { flex: 1; }
+  select, textarea, button { font: inherit; color: inherit; background: var(--bg);
+         border: 1px solid var(--borde); border-radius: 8px; padding: 7px 10px; }
+  button { cursor: pointer; white-space: nowrap; }
+  button.primario { background: var(--acento); color: var(--acento-txt); border-color: var(--acento); }
+  button.peligro { color: var(--peligro); }
+  button:disabled { opacity: .5; cursor: default; }
+  .control { display: grid; grid-template-columns: 110px 1fr 64px; gap: 10px; align-items: center; }
+  .control label { color: var(--sub); }
+  .control output { text-align: right; font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 100%; accent-color: var(--acento); }
+  textarea { width: 100%; min-height: 84px; resize: vertical; }
+  audio { width: 100%; height: 36px; }
+  .pie { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+  #estado { color: var(--sub); font-size: 13px; }
+  hr { border: 0; border-top: 1px solid var(--borde); margin: 0; }
+  .chk { display: flex; gap: 6px; align-items: center; color: var(--sub); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>TTSiro <small id="activo"></small></h1>
+
+  <div class="fila">
+    <select id="perfil" aria-label="Perfil"></select>
+    <button id="nuevo" title="Crear un perfil copiando el actual">Nuevo</button>
+    <button id="eliminar" class="peligro">Eliminar</button>
+  </div>
+
+  <div class="control">
+    <label for="voz">Voz</label>
+    <select id="voz" style="grid-column: span 2"></select>
+  </div>
+  <div class="fila" id="descarga" hidden>
+    <select id="catalogo" aria-label="Voces disponibles para descargar"></select>
+    <button id="descargar">Descargar</button>
+  </div>
+  <div id="controles" style="display: grid; gap: 10px"></div>
+
+  <hr>
+
+  <textarea id="texto" aria-label="Texto de prueba">Hola Leo. Esta es una prueba de lectura: el anillo de plata se forja a fuego lento, con paciencia y buen pulso.</textarea>
+  <div class="fila">
+    <button id="probar" class="primario">▶ Probar</button>
+    <label class="chk"><input type="checkbox" id="auto" checked> probar al mover los controles</label>
+  </div>
+  <audio id="audio" controls></audio>
+
+  <hr>
+
+  <div class="pie">
+    <span id="estado">Cargando…</span>
+    <span class="fila">
+      <button id="guardar">Guardar</button>
+      <button id="activar" class="primario" title="Usar este perfil en Meta+R y en Okular">Activar</button>
+    </span>
+  </div>
+</main>
+
+<script>
+const CONTROLES = [
+  ["velocidad", "Velocidad", 1, v => v + " %"],
+  ["tono", "Tono", 0.5, v => (v > 0 ? "+" : "") + v + " st"],
+  ["volumen", "Volumen", 5, v => v + " %"],
+  ["expresividad", "Expresividad", 0.05, v => v.toFixed(2)],
+  ["ritmo", "Variación", 0.05, v => v.toFixed(2)],
+  ["pausa", "Pausa oración", 0.1, v => v.toFixed(1) + " s"],
+];
+const $ = id => document.getElementById(id);
+let estado, actual, sucio = false, temporizador, peticion;
+
+function aviso(msg) { $("estado").textContent = msg; }
+function marcar(s) { sucio = s; pintarCabecera(); }
+function pintarCabecera() {
+  $("activo").textContent = "activo: " + estado.activo;
+  aviso(sucio ? "● cambios sin guardar" : "Guardado");
+}
+
+function pintarPerfiles() {
+  $("perfil").replaceChildren(...Object.keys(estado.perfiles).map(n => new Option(n)));
+  $("perfil").value = actual;
+  $("eliminar").disabled = Object.keys(estado.perfiles).length < 2;
+  const p = estado.perfiles[actual];
+  $("voz").value = p.voz;
+  for (const [k, , , fmt] of CONTROLES) {
+    $(k).value = p[k];
+    $(k + "-v").textContent = fmt(+p[k]);
+  }
+  pintarCabecera();
+}
+
+function cambio() {
+  const p = estado.perfiles[actual];
+  p.voz = $("voz").value;
+  for (const [k, , , fmt] of CONTROLES) { p[k] = +$(k).value; $(k + "-v").textContent = fmt(p[k]); }
+  marcar(true);
+  if ($("auto").checked) { clearTimeout(temporizador); temporizador = setTimeout(probar, 600); }
+}
+
+async function probar() {
+  const texto = $("texto").value.trim();
+  if (!texto) return aviso("Escribe un texto de prueba");
+  peticion?.abort();
+  peticion = new AbortController();
+  aviso("Sintetizando…");
+  try {
+    const r = await fetch("/api/probar", { method: "POST", signal: peticion.signal,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ perfil: estado.perfiles[actual], texto }) });
+    if (!r.ok) throw new Error((await r.json()).error);
+    URL.revokeObjectURL($("audio").src);
+    $("audio").src = URL.createObjectURL(await r.blob());
+    $("audio").play();
+    pintarCabecera();
+  } catch (e) { if (e.name !== "AbortError") aviso("Error: " + e.message); }
+}
+
+async function guardar(activo = estado.activo) {
+  try {
+    const r = await fetch("/api/guardar", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ activo, perfiles: estado.perfiles }) });
+    if (!r.ok) return aviso("Error: " + (await r.json()).error);
+    estado.activo = activo;
+    marcar(false);
+    return true;
+  } catch (e) { aviso("Error: " + e.message); }
+}
+
+$("perfil").onchange = () => { actual = $("perfil").value; pintarPerfiles(); };
+$("voz").onchange = cambio;
+$("probar").onclick = probar;
+$("descargar").onclick = async () => {
+  const voz = $("catalogo").value;
+  if (!voz) return;
+  $("descargar").disabled = true;
+  aviso("Descargando " + voz + "… (puede tardar)");
+  try {
+    const r = await fetch("/api/descargar", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ voz }) });
+    if (!r.ok) throw new Error((await r.json()).error);
+    await cargarVoces();
+    $("voz").value = voz;
+    cambio();
+    aviso("Voz descargada: " + voz);
+  } catch (e) { aviso("Error: " + e.message); }
+  $("descargar").disabled = false;
+};
+
+async function cargarVoces() {
+  estado.voces = (await (await fetch("/api/estado")).json()).voces;
+  const actualVoz = $("voz").value;
+  $("voz").replaceChildren(...estado.voces.map(v => new Option(v)));
+  $("voz").value = actualVoz;
+  try {  // sin red, la lista de descarga simplemente no aparece
+    const r = await fetch("/api/catalogo");
+    if (!r.ok) throw 0;
+    const orden = { high: 0, medium: 1, low: 2, x_low: 3 };
+    const lista = (await r.json()).sort((a, b) => (orden[a.calidad] ?? 9) - (orden[b.calidad] ?? 9) || a.clave.localeCompare(b.clave));
+    $("catalogo").replaceChildren(...lista.map(v => new Option(`${v.clave} · ${v.calidad} · ${v.mb} MB`, v.clave)));
+    $("descarga").hidden = !lista.length;
+  } catch { $("descarga").hidden = true; }
+}
+$("guardar").onclick = () => guardar();
+$("activar").onclick = async () => { if (await guardar(actual)) aviso("Activado: " + actual); };
+$("nuevo").onclick = () => {
+  const nombre = prompt("Nombre del nuevo perfil:")?.trim().slice(0, 40);
+  if (!nombre) return;
+  if (estado.perfiles[nombre]) return aviso("Ya existe un perfil con ese nombre");
+  estado.perfiles[nombre] = { ...estado.perfiles[actual] };
+  actual = nombre; pintarPerfiles(); marcar(true);
+};
+$("eliminar").onclick = () => {
+  if (!confirm(`¿Eliminar el perfil «${actual}»?`)) return;
+  delete estado.perfiles[actual];
+  if (estado.activo === actual) estado.activo = Object.keys(estado.perfiles)[0];
+  actual = estado.activo; pintarPerfiles(); marcar(true);
+};
+addEventListener("beforeunload", e => { if (sucio) e.preventDefault(); });
+
+(async () => {
+  estado = await (await fetch("/api/estado")).json();
+  $("controles").innerHTML = CONTROLES.map(([k, nombre, paso]) => {
+    const [min, max] = estado.rangos[k];
+    return `<div class="control"><label for="${k}">${nombre}</label>
+      <input type="range" id="${k}" min="${min}" max="${max}" step="${paso}"><output id="${k}-v"></output></div>`;
+  }).join("");
+  for (const [k] of CONTROLES) $(k).oninput = cambio;
+  actual = estado.activo;
+  $("voz").replaceChildren(...estado.voces.map(v => new Option(v)));
+  pintarPerfiles();
+  cargarVoces();  // sin await: el catálogo puede tardar
+})();
+</script>
+</body>
+</html>

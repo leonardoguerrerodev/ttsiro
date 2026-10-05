@@ -1,0 +1,7 @@
+[Desktop Entry]
+Exec=pkill -f laura-pitch.wav
+Name=Detener Laura
+NoDisplay=true
+StartupNotify=false
+Type=Application
+X-KDE-GlobalAccel-CommandShortcut=true
