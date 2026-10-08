@@ -1,8 +1,8 @@
 [Desktop Entry]
+Type=Application
 Name=TTSiro
 Comment=Configurar y probar la voz del lector (Meta+R y Okular)
-Exec=sh -c 'D="$(dirname "$(readlink -f "$1")")/.."; exec python3 "$D/ui/servidor.py"' sh %k
+Exec=python3 "@RAIZ@/ui/servidor.py"
 Icon=preferences-desktop-text-to-speech
 Terminal=false
-Type=Application
 Categories=Utility;Accessibility;

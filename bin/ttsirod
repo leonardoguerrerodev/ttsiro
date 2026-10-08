@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""ttsirod: daemon de TTSiro. Mantiene las voces de piper cargadas en memoria.
+
+Escucha en $XDG_RUNTIME_DIR/ttsiro/daemon.sock. Lo arranca solo `ttsiro-piper`
+la primera vez que se necesita; no hace falta lanzarlo a mano.
+Debe correr con el python del entorno donde está instalado piper (ttsiro-piper
+lo averigua leyendo el shebang del comando `piper`).
+
+Protocolo (un cliente = una síntesis):
+  cliente -> línea JSON {modelo, length, noise, noisew, volumen, silencio} + texto UTF-8, y cierra su escritura
+  daemon  -> línea JSON {"tasa": N} (o {"error": "..."}) + audio PCM s16le mono hasta cerrar
+
+Comandos de control (los usa el plasmoide de la barra, vía `ttsiro-piper --estado/--salir`):
+  {"cmd": "estado"} -> {"voces": [rutas cargadas], "cargando": [ruta]|[], "pid": N, "rss_mb": N}
+  {"cmd": "salir"}  -> {"ok": true} y el daemon termina (libera la memoria de las voces)
+"""
+import fcntl, json, os, socket, socketserver, sys, threading
+from collections import OrderedDict
+from pathlib import Path
+
+from piper import PiperVoice, SynthesisConfig
+
+RUN = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}") / "ttsiro"
+SOCK = RUN / "daemon.sock"
+MAX_VOCES = 2          # voces que se conservan a la vez (perfiles distintos = modelos distintos)
+MAX_TEXTO = 1_000_000  # bytes
+
+_voces = OrderedDict()           # ruta -> PiperVoice (la última usada va al final)
+_candado_voces = threading.Lock()
+_candado_inferencia = threading.Lock()  # onnxruntime: una inferencia a la vez
+# Reflejo del estado para el comando "estado". `cargar` retiene _candado_voces mientras carga (segundos),
+# así que "estado" no puede usarlo: lee estas dos variables, que solo se reasignan (nunca se mutan).
+_cargadas = ()          # rutas de las voces cargadas
+_cargando_ahora = None  # ruta de la voz que se está cargando, o None
+
+
+def rss_mb():
+    try:
+        with open("/proc/self/status") as f:
+            for linea in f:
+                if linea.startswith("VmRSS:"):
+                    return round(int(linea.split()[1]) / 1024)
+    except OSError:
+        pass
+    return 0
+
+
+def cargar(ruta):
+    global _cargadas, _cargando_ahora
+    with _candado_voces:
+        if ruta in _voces:
+            _voces.move_to_end(ruta)
+            return _voces[ruta]
+        _cargando_ahora = ruta
+        try:
+            voz = PiperVoice.load(ruta)
+            # Calentamiento: la primera inferencia de onnx es lenta; que la pague la carga, no tu lectura.
+            for _ in voz.synthesize("hola"):
+                pass
+            _voces[ruta] = voz
+            while len(_voces) > MAX_VOCES:
+                _voces.popitem(last=False)
+            _cargadas = tuple(_voces)
+        finally:
+            _cargando_ahora = None
+        return voz
+
+
+class Manejador(socketserver.StreamRequestHandler):
+    def _linea(self, obj):
+        self.wfile.write(json.dumps(obj).encode() + b"\n")
+        self.wfile.flush()
+
+    def handle(self):
+        try:
+            cab = json.loads(self.rfile.readline())
+            cmd = cab.get("cmd")
+            if cmd == "estado":
+                return self._linea({"voces": list(_cargadas), "cargando": [_cargando_ahora] if _cargando_ahora else [],
+                                    "pid": os.getpid(), "rss_mb": rss_mb()})
+            if cmd == "salir":
+                self._linea({"ok": True})
+                # shutdown() espera a serve_forever (hilo principal): se pide desde otro hilo para no bloquear este.
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
+                return
+            texto = self.rfile.read(MAX_TEXTO).decode("utf-8", "replace")
+            voz = cargar(cab["modelo"])
+            cfg = SynthesisConfig(length_scale=cab.get("length"), noise_scale=cab.get("noise"),
+                                  noise_w_scale=cab.get("noisew"), volume=cab.get("volumen") or 1.0)
+            silencio = bytes(int(voz.config.sample_rate * (cab.get("silencio") or 0)) * 2)
+            self._linea({"tasa": voz.config.sample_rate})
+            for linea in (l.strip() for l in texto.splitlines()):  # igual que el CLI de piper: una síntesis por línea
+                if not linea:
+                    continue
+                it = iter(voz.synthesize(linea, cfg))
+                i = 0
+                while True:
+                    with _candado_inferencia:
+                        trozo = next(it, None)
+                    if trozo is None:
+                        break
+                    if i:
+                        self.wfile.write(silencio)
+                    self.wfile.write(trozo.audio_int16_bytes)
+                    self.wfile.flush()  # sale por oración: mpv empieza a hablar sin esperar el texto completo
+                    i += 1
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # el cliente se fue (por ejemplo, Detener Laura mató a mpv)
+        except Exception as e:  # noqa: BLE001
+            try:
+                self._linea({"error": f"{type(e).__name__}: {e}"})
+            except OSError:
+                pass
+
+
+class Servidor(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+    daemon_threads = True
+
+
+def main():
+    RUN.mkdir(parents=True, exist_ok=True)
+    cierre = open(RUN / "daemon.lock", "w")
+    try:
+        fcntl.flock(cierre, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        sys.exit(0)  # ya hay un daemon vivo
+    SOCK.unlink(missing_ok=True)
+    servidor = Servidor(str(SOCK), Manejador)
+    os.chmod(SOCK, 0o600)
+    try:
+        servidor.serve_forever()
+    finally:
+        SOCK.unlink(missing_ok=True)
+
+
+if __name__ == "__main__":
+    main()

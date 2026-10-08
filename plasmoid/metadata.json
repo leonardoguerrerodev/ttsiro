@@ -1,0 +1,20 @@
+{
+    "KPlugin": {
+        "Authors": [
+            { "Name": "TTSiro" }
+        ],
+        "Category": "Multimedia",
+        "Description": "Shows whether the TTSiro voice is preloaded in memory",
+        "Description[es]": "Indica si la voz de TTSiro está precargada en memoria",
+        "EnabledByDefault": true,
+        "Icon": "text-speak",
+        "Id": "net.local.ttsiro.estado",
+        "License": "GPL-3.0+",
+        "Name": "TTSiro",
+        "Version": "1.0"
+    },
+    "KPackageStructure": "Plasma/Applet",
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "X-Plasma-NotificationArea": "true",
+    "X-Plasma-NotificationAreaCategory": "ApplicationStatus"
+}

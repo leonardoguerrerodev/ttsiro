@@ -1,7 +1,9 @@
 [Desktop Entry]
-Exec=pkill -f laura-pitch.wav
-Name=Detener Laura
-NoDisplay=true
-StartupNotify=false
 Type=Application
+Name=Detener Laura
+Comment=Cierra el reproductor de la lectura en curso (Meta+Ctrl+Shift+R)
+Exec="@RAIZ@/bin/detener-laura.sh"
+NoDisplay=true
+Terminal=false
+StartupNotify=false
 X-KDE-GlobalAccel-CommandShortcut=true

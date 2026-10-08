@@ -1,0 +1,246 @@
+#!/usr/bin/env python3
+"""ttsiro-piper: reemplazo directo del comando `piper` que usa el daemon `ttsirod`.
+
+Acepta los mismos argumentos que usan los scripts de TTSiro (-m, -f, --output_raw,
+--input-file, --length-scale, --noise-scale, --noise-w, --volume, --sentence-silence).
+Si el daemon no está, lo arranca (la voz se carga una sola vez). Si algo falla o se
+pide una opción que no soporta, ejecuta el piper normal, así que nunca empeora.
+
+  ttsiro-piper --precargar     carga la voz del perfil activo (para el autoarranque de sesión)
+  ttsiro-piper --estado        imprime una línea JSON con el estado de la precarga (lo lee el plasmoide)
+  ttsiro-piper --salir         apaga el daemon (libera la memoria de las voces)
+"""
+import argparse, json, os, re, shutil, socket, subprocess, sys, time, wave
+from pathlib import Path
+
+AQUI = Path(os.path.realpath(__file__)).parent
+RAIZ = AQUI.parent
+RUN = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}") / "ttsiro"
+SOCK = RUN / "daemon.sock"
+PIPER = shutil.which("piper") or shutil.which("piper", path=str(Path.home() / ".local" / "bin"))
+
+
+def python_de_piper():
+    """El daemon necesita el python donde vive piper (pipx lo mete en un venv propio)."""
+    if PIPER:
+        with open(PIPER, "rb") as f:
+            partes = f.readline().decode(errors="ignore")[2:].split()
+        if partes and partes[0] != "/usr/bin/env":
+            return partes[0]
+    return sys.executable
+
+
+def conectar():
+    s = socket.socket(socket.AF_UNIX)
+    try:
+        s.connect(str(SOCK))
+    except OSError:
+        s.close()
+        raise
+    return s
+
+
+def arrancar_daemon():
+    """Lanza ttsirod y espera su socket. Devuelve la conexión o None (ver daemon.log).
+
+    Primero dentro de un scope propio de systemd (--user --scope): así el daemon sobrevive a que termine
+    el servicio o la sesión que lo lanzó (autostart, atajo, plasmoide). Si systemd-run no sirve, directo.
+    """
+    cmd = [python_de_piper(), str(AQUI / "ttsirod")]
+    intentos = []
+    sr = shutil.which("systemd-run")
+    if sr:
+        intentos.append([sr, "--user", "--scope", "--quiet", "--description=TTSiro: voz precargada"] + cmd)
+    intentos.append(cmd)
+    RUN.mkdir(parents=True, exist_ok=True)
+    for c in intentos:
+        try:
+            with open(RUN / "daemon.log", "ab") as log:
+                proc = subprocess.Popen(c, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+        except OSError:
+            continue
+        limite = time.time() + 60
+        while True:
+            try:
+                return conectar()
+            except OSError:
+                pass
+            if proc.poll() not in (None, 0):  # murió: probar el siguiente intento
+                break
+            if time.time() > limite:
+                return None
+            time.sleep(0.2)
+    return None
+
+
+def conexion(arrancar=True):
+    try:
+        return conectar()
+    except OSError:
+        if not arrancar:
+            return None
+    return arrancar_daemon()
+
+
+def leer_cabecera(s):
+    buf = b""
+    while not buf.endswith(b"\n"):
+        c = s.recv(1)
+        if not c:
+            raise ConnectionError("el daemon cerró sin responder")
+        buf += c
+    return json.loads(buf)
+
+
+def pedir(modelo, texto, a):
+    """Devuelve (tasa, iterador de bytes PCM) o None si no se pudo usar el daemon."""
+    s = conexion()
+    if not s:
+        return None
+    cab = {"modelo": modelo, "length": a.length_scale, "noise": a.noise_scale, "noisew": a.noise_w,
+           "volumen": a.volume, "silencio": a.sentence_silence}
+    s.sendall(json.dumps(cab).encode() + b"\n" + texto.encode())
+    s.shutdown(socket.SHUT_WR)
+    resp = leer_cabecera(s)
+    if "error" in resp:
+        print(f"ttsirod: {resp['error']}", file=sys.stderr)
+        return None
+
+    def trozos():
+        while True:
+            d = s.recv(65536)  # recv, no un archivo con buffer: así el audio llega por oración
+            if not d:
+                break
+            yield d
+    return resp["tasa"], trozos()
+
+
+def modelo_activo():
+    m = re.search(r'^MODELO="(.*)"', (RAIZ / "activo.env").read_text(), re.M)
+    return m.group(1).replace("$RAIZ", str(RAIZ))
+
+
+def daemon_vivo():
+    """¿Hay un ttsirod de este usuario en marcha? (sirve para distinguir "iniciando" de "apagado")."""
+    uid = os.getuid()
+    for cmdline in Path("/proc").glob("[0-9]*/cmdline"):
+        try:
+            if cmdline.stat().st_uid != uid:
+                continue
+            args = cmdline.read_bytes().split(b"\0")
+        except OSError:
+            continue
+        if len(args) > 1 and os.path.basename(args[1]) == b"ttsirod":
+            return True
+    return False
+
+
+def comando_daemon(cmd):
+    """Manda un comando de control al daemon (sin arrancarlo). Devuelve su respuesta o None."""
+    s = conexion(arrancar=False)
+    if not s:
+        return None
+    try:
+        s.settimeout(4)
+        s.sendall(json.dumps({"cmd": cmd}).encode() + b"\n")
+        s.shutdown(socket.SHUT_WR)
+        return leer_cabecera(s)
+    except (OSError, ConnectionError, ValueError):
+        return None
+    finally:
+        s.close()
+
+
+def estado():
+    """Una línea JSON para el plasmoide.
+
+    estado: lista (la voz activa está en memoria) | cargando | iniciando (el daemon arranca, aún sin socket)
+            | otra_voz (daemon vivo, pero la voz activa no está cargada) | apagado | sin_perfil
+    """
+    try:
+        modelo = os.path.realpath(modelo_activo())
+    except (OSError, AttributeError):  # no hay activo.env, o no trae MODELO
+        modelo = None
+    r = comando_daemon("estado")
+    cargadas = [os.path.realpath(x) for x in (r or {}).get("voces", [])]
+    cargando = [os.path.realpath(x) for x in (r or {}).get("cargando", [])]
+    if modelo is None:
+        est = "sin_perfil"
+    elif r is None:
+        est = "iniciando" if daemon_vivo() else "apagado"
+    elif modelo in cargadas:
+        est = "lista"
+    elif modelo in cargando:
+        est = "cargando"
+    else:
+        est = "otra_voz"
+    voz = os.path.basename(modelo)[:-5] if modelo and modelo.endswith(".onnx") else ""
+    print(json.dumps({"estado": est, "voz": voz, "rss_mb": (r or {}).get("rss_mb", 0),
+                      "cargadas": [os.path.basename(x)[:-5] for x in cargadas]}))
+
+
+def main():
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument("-m", "--model")
+    ap.add_argument("-f", "--output-file", "--output_file")
+    ap.add_argument("--output-raw", "--output_raw", action="store_true")
+    ap.add_argument("--input-file", "--input_file", nargs="+")
+    ap.add_argument("--length-scale", "--length_scale", type=float)
+    ap.add_argument("--noise-scale", "--noise_scale", type=float)
+    ap.add_argument("--noise-w-scale", "--noise_w_scale", "--noise-w", "--noise_w", dest="noise_w", type=float)
+    ap.add_argument("--volume", type=float, default=1.0)
+    ap.add_argument("--sentence-silence", "--sentence_silence", type=float, default=0.0)
+    ap.add_argument("--precargar", action="store_true")
+    ap.add_argument("--estado", action="store_true")
+    ap.add_argument("--salir", action="store_true")
+    a, extra = ap.parse_known_args()
+
+    if a.estado:
+        return estado()
+    if a.salir:
+        comando_daemon("salir")
+        return
+
+    if a.precargar:
+        try:
+            r = pedir(modelo_activo(), "", a)
+            for _ in (r[1] if r else ()):
+                pass
+        except (OSError, ConnectionError):
+            pass
+        return
+
+    # Opciones que el daemon no cubre (--cuda, -s, salida WAV por stdout...): piper de siempre.
+    if extra or not a.model or not (a.output_raw or a.output_file):
+        if not PIPER:
+            sys.exit("ttsiro-piper: piper no está instalado (ejecuta ./instalar.sh)")
+        os.execv(PIPER, [PIPER] + sys.argv[1:])
+
+    texto = "\n".join(Path(p).read_text(encoding="utf-8") for p in a.input_file) if a.input_file else sys.stdin.read()
+    try:
+        r = pedir(os.path.abspath(a.model), texto, a)
+    except (OSError, ConnectionError, ValueError):
+        r = None
+    if r is None:  # plan B: piper normal (carga el modelo en cada llamada, como antes)
+        if not PIPER:
+            sys.exit("ttsiro-piper: el daemon no responde (mira daemon.log) y piper no está instalado")
+        sys.exit(subprocess.run([PIPER] + sys.argv[1:], input=texto.encode()).returncode)
+
+    tasa, trozos = r
+    if a.output_raw:
+        try:
+            for d in trozos:
+                sys.stdout.buffer.write(d)
+                sys.stdout.buffer.flush()
+        except BrokenPipeError:  # mpv se cerró (Detener)
+            os._exit(0)
+    else:
+        with wave.open(a.output_file, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(tasa)
+            w.writeframes(b"".join(trozos))
+
+
+if __name__ == "__main__":
+    main()

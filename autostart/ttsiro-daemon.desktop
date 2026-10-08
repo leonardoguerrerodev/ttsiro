@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=TTSiro (precargar voz)
+Comment=Deja la voz del perfil activo cargada en memoria al iniciar sesión
+Exec="@RAIZ@/bin/ttsiro-piper" --precargar
+NoDisplay=true
+Terminal=false
+StartupNotify=false

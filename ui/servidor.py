@@ -17,7 +17,7 @@ PERFILES = RAIZ / "perfiles.json"
 ACTIVO_ENV = RAIZ / "activo.env"
 HF = "https://huggingface.co/rhasspy/piper-voices/resolve/main/"
 IDIOMA = "es"  # familia de idioma que ofrece el catálogo
-PIPER = shutil.which("piper")
+PIPER = shutil.which("piper") or shutil.which("piper", path=str(Path.home() / ".local" / "bin"))  # un lanzador de KDE puede no tener ~/.local/bin en PATH
 RUBBERBAND = shutil.which("rubberband")
 
 # campo: (mínimo, máximo, por defecto)
@@ -56,6 +56,7 @@ def descargar(clave):
     voz = catalogo().get(clave)
     if not voz:
         raise ValueError(f"voz fuera del catálogo: {clave}")
+    VOCES.mkdir(exist_ok=True)
     for ruta in voz["archivos"]:
         destino = VOCES / Path(ruta).name
         tmp = destino.with_name(destino.name + ".part")
@@ -85,7 +86,7 @@ def limpiar(perfil):
 def args_piper(p):
     if not PIPER:
         raise RuntimeError("No se encontró piper en PATH")
-    return [PIPER, "-m", str(VOCES / f"{p['voz']}.onnx"),
+    return [str(RAIZ / "bin" / "ttsiro-piper"), "-m", str(VOCES / f"{p['voz']}.onnx"),
             "--length-scale", f"{100 / p['velocidad']:.3f}",
             "--noise-scale", str(p["expresividad"]), "--noise-w", str(p["ritmo"]),
             "--volume", f"{p['volumen'] / 100:.2f}", "--sentence-silence", str(p["pausa"])]

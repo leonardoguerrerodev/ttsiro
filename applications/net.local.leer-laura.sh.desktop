@@ -1,7 +1,9 @@
 [Desktop Entry]
-Exec=sh -c 'D="$(dirname "$(readlink -f "$1")")/.."; exec "$D/bin/leer-laura.sh"' sh %k
-Name=Laura
-NoDisplay=true
-StartupNotify=false
 Type=Application
+Name=Laura
+Comment=Lee en voz alta el texto seleccionado (Meta+R)
+Exec="@RAIZ@/bin/leer-laura.sh"
+NoDisplay=true
+Terminal=false
+StartupNotify=false
 X-KDE-GlobalAccel-CommandShortcut=true

@@ -1,6 +1,7 @@
-voces/*.onnx
-voces/*.onnx.json
-voces/*.part
+voces/
+__pycache__/
+*.pyc
+*.part
+*.bak.*
 activo.env
 perfiles.json
-__pycache__/
