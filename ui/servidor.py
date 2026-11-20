@@ -10,7 +10,7 @@ import json, math, os, shutil, subprocess, sys, tempfile, threading, urllib.requ
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-PUERTO = 8765
+PUERTO = 8766
 RAIZ = Path(__file__).resolve().parent.parent
 VOCES = RAIZ / "voces"
 PERFILES = RAIZ / "perfiles.json"
